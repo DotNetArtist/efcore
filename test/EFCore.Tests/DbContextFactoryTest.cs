@@ -3,9 +3,9 @@
 
 using System;
 using System.Linq;
-using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.InMemory.Infrastructure.Internal;
+using Microsoft.EntityFrameworkCore.Internal;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
@@ -40,6 +40,36 @@ namespace Microsoft.EntityFrameworkCore
             Assert.Equal(nameof(WoolacombeContext), GetStoreName(context2));
         }
 
+        [ConditionalFact]
+        public void Factory_can_use_pool()
+        {
+            var serviceProvider = (IServiceProvider)new ServiceCollection()
+                .AddPooledDbContextFactory<WoolacombeContext>(
+                    b => b.UseInMemoryDatabase(nameof(WoolacombeContext)))
+                .BuildServiceProvider(validateScopes: true);
+
+            var contextFactory = serviceProvider.GetService<IDbContextFactory<WoolacombeContext>>();
+
+            var context1 = contextFactory.CreateDbContext();
+            var context2 = contextFactory.CreateDbContext();
+
+            Assert.NotSame(context1, context2);
+            Assert.Equal(nameof(WoolacombeContext), GetStoreName(context1));
+            Assert.Equal(nameof(WoolacombeContext), GetStoreName(context2));
+
+            context1.Dispose();
+            context2.Dispose();
+
+            using var context1b = contextFactory.CreateDbContext();
+            using var context2b = contextFactory.CreateDbContext();
+
+            Assert.NotSame(context1b, context2b);
+            Assert.Same(context1, context1b);
+            Assert.Same(context2, context2b);
+            Assert.Equal(nameof(WoolacombeContext), GetStoreName(context1b));
+            Assert.Equal(nameof(WoolacombeContext), GetStoreName(context2b));
+        }
+
         [ConditionalTheory]
         [InlineData(ServiceLifetime.Singleton)]
         [InlineData(ServiceLifetime.Scoped)]
@@ -62,6 +92,26 @@ namespace Microsoft.EntityFrameworkCore
             var serviceCollection = new ServiceCollection()
                 .AddDbContextFactory<WoolacombeContext>(
                     b => b.UseInMemoryDatabase(nameof(WoolacombeContext)));
+
+            Assert.Equal(
+                ServiceLifetime.Singleton,
+                serviceCollection.Single(e => e.ServiceType == typeof(IDbContextFactory<WoolacombeContext>)).Lifetime);
+
+            Assert.Equal(
+                ServiceLifetime.Singleton,
+                serviceCollection.Single(e => e.ServiceType == typeof(DbContextOptions<WoolacombeContext>)).Lifetime);
+        }
+
+        [ConditionalFact]
+        public void Lifetime_is_singleton_when_pooling()
+        {
+            var serviceCollection = new ServiceCollection()
+                .AddPooledDbContextFactory<WoolacombeContext>(
+                    b => b.UseInMemoryDatabase(nameof(WoolacombeContext)));
+
+            Assert.Equal(
+                ServiceLifetime.Singleton,
+                serviceCollection.Single(e => e.ServiceType == typeof(DbContextPool<WoolacombeContext>)).Lifetime);
 
             Assert.Equal(
                 ServiceLifetime.Singleton,
@@ -117,6 +167,18 @@ namespace Microsoft.EntityFrameworkCore
         {
             protected internal override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
                 => optionsBuilder.UseInMemoryDatabase(nameof(MortehoeContext));
+        }
+
+        [ConditionalFact]
+        public void Factory_can_use_DbContext_directly()
+        {
+            var serviceProvider = (IServiceProvider)new ServiceCollection()
+                .AddDbContextFactory<DbContext>(b => b.UseInMemoryDatabase(nameof(DbContext)))
+                .BuildServiceProvider(validateScopes: true);
+
+            using var context = serviceProvider.GetService<IDbContextFactory<DbContext>>().CreateDbContext();
+
+            Assert.Equal(nameof(DbContext), GetStoreName(context));
         }
 
         [ConditionalTheory]
@@ -270,7 +332,7 @@ namespace Microsoft.EntityFrameworkCore
                 .AddScoped<ScopedService>()
                 .AddTransient<TransientService>()
                 .AddDbContextFactory<WoolacombeContext>(
-                    optionsAction: (p, b) =>
+                    (p, b) =>
                     {
                         Assert.NotNull(p.GetService<SingletonService>());
                         Assert.NotNull(p.GetService<TransientService>());
@@ -289,6 +351,32 @@ namespace Microsoft.EntityFrameworkCore
             {
                 serviceProvider = serviceProvider.CreateScope().ServiceProvider;
             }
+
+            var contextFactory = serviceProvider.GetService<IDbContextFactory<WoolacombeContext>>();
+
+            using var context1 = contextFactory.CreateDbContext();
+            using var context2 = contextFactory.CreateDbContext();
+
+            Assert.NotSame(context1, context2);
+            Assert.Equal(nameof(WoolacombeContext), GetStoreName(context1));
+            Assert.Equal(nameof(WoolacombeContext), GetStoreName(context2));
+        }
+
+        [ConditionalFact]
+        public void Can_resolve_from_the_service_provider_when_pooling()
+        {
+            var serviceProvider = (IServiceProvider)new ServiceCollection()
+                .AddSingleton<SingletonService>()
+                .AddTransient<TransientService>()
+                .AddDbContextFactory<WoolacombeContext>(
+                    (p, b) =>
+                    {
+                        Assert.NotNull(p.GetService<SingletonService>());
+                        Assert.NotNull(p.GetService<TransientService>());
+
+                        b.UseInMemoryDatabase(nameof(WoolacombeContext));
+                    })
+                .BuildServiceProvider(validateScopes: true);
 
             var contextFactory = serviceProvider.GetService<IDbContextFactory<WoolacombeContext>>();
 

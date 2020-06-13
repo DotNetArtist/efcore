@@ -63,6 +63,7 @@ namespace Microsoft.EntityFrameworkCore
 
         private IServiceScope _serviceScope;
         private IDbContextPool _dbContextPool;
+        private Action<DbContext> _returnToPool;
         private bool _initializing;
         private bool _disposed;
 
@@ -623,8 +624,9 @@ namespace Microsoft.EntityFrameworkCore
         ///     doing so can result in application failures when updating to a new Entity Framework Core release.
         /// </summary>
         [EntityFrameworkInternal]
-        void IDbContextPoolable.SetPool(IDbContextPool contextPool)
+        void IDbContextPoolable.SetPool(IDbContextPool contextPool, Action<DbContext> returnToPool)
         {
+            _returnToPool = returnToPool;
             _dbContextPool = contextPool;
             _lease = 1;
         }
@@ -652,8 +654,9 @@ namespace Microsoft.EntityFrameworkCore
         ///     doing so can result in application failures when updating to a new Entity Framework Core release.
         /// </summary>
         [EntityFrameworkInternal]
-        void IDbContextPoolable.Resurrect(DbContextPoolConfigurationSnapshot configurationSnapshot)
+        void IDbContextPoolable.Resurrect(DbContextPoolConfigurationSnapshot configurationSnapshot, Action<DbContext> returnToPool)
         {
+            _returnToPool = returnToPool;
             _disposed = false;
             ++_lease;
 
@@ -757,6 +760,14 @@ namespace Microsoft.EntityFrameworkCore
 
         private bool DisposeSync()
         {
+            if (_returnToPool != null)
+            {
+                _returnToPool(this);
+                _returnToPool = null;
+
+                return false;
+            }
+
             if (_dbContextPool == null
                 && !_disposed)
             {

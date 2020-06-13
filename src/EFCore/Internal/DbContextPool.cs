@@ -24,6 +24,7 @@ namespace Microsoft.EntityFrameworkCore.Internal
     public class DbContextPool<TContext> : IDbContextPool, IDisposable, IAsyncDisposable
         where TContext : DbContext
     {
+        private readonly bool _standalone;
         private const int DefaultPoolSize = 32;
 
         private readonly ConcurrentQueue<TContext> _pool = new ConcurrentQueue<TContext>();
@@ -72,7 +73,7 @@ namespace Microsoft.EntityFrameworkCore.Internal
                 {
                     if (!_contextPool.Return(Context))
                     {
-                        ((IDbContextPoolable)Context).SetPool(null);
+                        ((IDbContextPoolable)Context).SetPool(null, null);
                         Context.Dispose();
                     }
 
@@ -87,7 +88,7 @@ namespace Microsoft.EntityFrameworkCore.Internal
                 {
                     if (!_contextPool.Return(Context))
                     {
-                        ((IDbContextPoolable)Context).SetPool(null);
+                        ((IDbContextPoolable)Context).SetPool(null, null);
                         await Context.DisposeAsync().ConfigureAwait(false);
                     }
 
@@ -103,8 +104,20 @@ namespace Microsoft.EntityFrameworkCore.Internal
         ///     any release. You should only use it directly in your code with extreme caution and knowing that
         ///     doing so can result in application failures when updating to a new Entity Framework Core release.
         /// </summary>
-        public DbContextPool([NotNull] DbContextOptions options)
+        public DbContextPool([NotNull] DbContextOptions<TContext> options)
+            : this(options, standalone: true)
         {
+        }
+
+        /// <summary>
+        ///     This is an internal API that supports the Entity Framework Core infrastructure and not subject to
+        ///     the same compatibility standards as public APIs. It may be changed or removed without notice in
+        ///     any release. You should only use it directly in your code with extreme caution and knowing that
+        ///     doing so can result in application failures when updating to a new Entity Framework Core release.
+        /// </summary>
+        public DbContextPool([NotNull] DbContextOptions<TContext> options, bool standalone)
+        {
+            _standalone = standalone;
             _maxSize = options.FindExtension<CoreOptionsExtension>()?.MaxPoolSize ?? DefaultPoolSize;
 
             options.Freeze();
@@ -118,7 +131,7 @@ namespace Microsoft.EntityFrameworkCore.Internal
             }
         }
 
-        private static Func<TContext> CreateActivator(DbContextOptions options)
+        private static Func<TContext> CreateActivator(DbContextOptions<TContext> options)
         {
             var constructors
                 = typeof(TContext).GetTypeInfo().DeclaredConstructors
@@ -151,13 +164,24 @@ namespace Microsoft.EntityFrameworkCore.Internal
         /// </summary>
         public virtual TContext Rent()
         {
+            var returnToPool = _standalone
+                ? c =>
+                {
+                    if (!Return((TContext)c))
+                    {
+                        ((IDbContextPoolable)c).SetPool(null, null);
+                        c.Dispose();
+                    }
+                }
+                : (Action<DbContext>)null;
+
             if (_pool.TryDequeue(out var context))
             {
                 Interlocked.Decrement(ref _count);
 
                 Check.DebugAssert(_count >= 0, $"_count is {_count}");
 
-                ((IDbContextPoolable)context).Resurrect(_configurationSnapshot);
+                ((IDbContextPoolable)context).Resurrect(_configurationSnapshot, returnToPool);
 
                 return context;
             }
@@ -170,7 +194,8 @@ namespace Microsoft.EntityFrameworkCore.Internal
                     (IDbContextPoolable)context,
                     c => c.SnapshotConfiguration());
 
-            ((IDbContextPoolable)context).SetPool(this);
+
+            ((IDbContextPoolable)context).SetPool(this, returnToPool);
 
             return context;
         }
@@ -227,7 +252,7 @@ namespace Microsoft.EntityFrameworkCore.Internal
 
             while (_pool.TryDequeue(out var context))
             {
-                ((IDbContextPoolable)context).SetPool(null);
+                ((IDbContextPoolable)context).SetPool(null, null);
                 context.Dispose();
             }
         }
@@ -244,7 +269,7 @@ namespace Microsoft.EntityFrameworkCore.Internal
 
             while (_pool.TryDequeue(out var context))
             {
-                ((IDbContextPoolable)context).SetPool(null);
+                ((IDbContextPoolable)context).SetPool(null, null);
                 await context.DisposeAsync().ConfigureAwait(false);
             }
         }
